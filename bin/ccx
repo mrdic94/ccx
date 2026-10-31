@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# ccx — sesiones de Claude Code con barra lateral, sobre tmux.
+# Compatible con bash 3.2 (macOS) en adelante.
+set -euo pipefail
+
+# Lanzado desde el menú de aplicaciones el PATH puede venir recortado:
+# claude suele vivir en ~/.local/bin y, en macOS, tmux en Homebrew.
+for d in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin; do
+  case ":$PATH:" in *":$d:"*) ;; *) [ -d "$d" ] && PATH="$d:$PATH" ;; esac
+done
+export PATH
+
+SOCK="${CCX_SOCKET:-ccx}"
+HERE="${CCX_SHARE:-$HOME/.local/share/ccx}"   # enlace simbólico a share/ del repositorio
+PROJECT_FILE="$HOME/.config/ccx/project"
+t() { tmux -L "$SOCK" -f "$HERE/tmux.conf" "$@"; }
+
+usage() {
+  cat <<'EOF'
+ccx — sesiones de Claude Code con barra lateral
+
+  ccx           abre ccx (o vuelve a él si ya está en marcha)
+  ccx --kill    cierra ccx y TODAS las sesiones de Claude abiertas en él
+  ccx --reload  recarga la barra lateral (tras actualizar) sin cerrar sesiones
+  ccx --project [carpeta]
+                fija el proyecto de las sesiones nuevas (sin carpeta: la actual)
+  ccx --no-project
+                quita el proyecto fijo (vuelve a usar el de la sesión elegida)
+  ccx --help    esta ayuda
+
+Dentro:  ↑/↓ moverse · Enter/clic abrir · n nueva · x cerrar · / buscar
+         Alt+s alternar barra/sesión · Alt+d o q salir (todo sigue en marcha)
+EOF
+}
+
+# Orden para copiar al portapapeles desde el modo copia de tmux.
+clipboard_cmd() {
+  if [ "$(uname)" = Darwin ]; then echo "pbcopy"
+  elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null; then echo "wl-copy"
+  elif command -v xclip >/dev/null; then echo "xclip -selection clipboard"
+  elif command -v xsel >/dev/null; then echo "xsel --clipboard --input"
+  fi
+}
+
+start_server() {
+  t has-session -t '=ccx' 2>/dev/null && return 0
+  local cols lines start clip
+  cols=$(tput cols 2>/dev/null || echo 200); lines=$(tput lines 2>/dev/null || echo 50)
+  start="$PWD"
+  if [ -s "$PROJECT_FILE" ] && [ -d "$(cat "$PROJECT_FILE")" ]; then start="$(cat "$PROJECT_FILE")"; fi
+  t new-session -d -s ccx -n ccx -c "$start" -x "$cols" -y "$lines" \
+    -e CCX_START_DIR="$start" -e CCX_SOCKET="$SOCK" ${CCX_CLAUDE:+-e CCX_CLAUDE="$CCX_CLAUDE"} \
+    "while :; do python3 -I '$HERE/sidebar.py' || { echo; echo 'ccx: la barra lateral ha fallado, reintentando en 3 s…'; sleep 3; }; done"
+  clip="$(clipboard_cmd)"
+  if [ -n "$clip" ]; then t set -s copy-command "$clip"; fi
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  --kill)
+    if t kill-server 2>/dev/null; then echo "ccx cerrado."; else echo "ccx no estaba en marcha."; fi
+    exit 0 ;;
+  --reload)
+    pane="$(t list-panes -a -F '#{pane_id} #{@ccx_sid}' 2>/dev/null | awk '$2=="__sidebar__"{print $1}')"
+    if [ -n "$pane" ]; then t respawn-pane -k -t "$pane"; echo "ccx: barra lateral recargada."
+    else echo "ccx no está en marcha."; fi
+    exit 0 ;;
+  --start-only) start_server; exit 0 ;;              # usado por tests/smoke.sh
+  --project)
+    target="${2:-$PWD}"
+    dir="$(cd "$target" 2>/dev/null && pwd -P)" || { echo "ccx: no existe la carpeta $target"; exit 1; }
+    mkdir -p "$(dirname "$PROJECT_FILE")" && printf '%s\n' "$dir" > "$PROJECT_FILE"
+    echo "ccx: las sesiones nuevas se abrirán en $dir"; exit 0 ;;
+  --no-project)
+    rm -f "$PROJECT_FILE"; echo "ccx: sin proyecto fijo."; exit 0 ;;
+  "") ;;
+  *) usage; exit 1 ;;
+esac
+
+command -v tmux >/dev/null || { echo "ccx: falta tmux (consulta el README)"; exit 1; }
+case "${TMUX:-}" in *"/$SOCK,"*) echo "ccx: ya estás dentro de ccx."; exit 0 ;; esac
+
+start_server
+unset TMUX
+exec tmux -L "$SOCK" attach -t '=ccx'

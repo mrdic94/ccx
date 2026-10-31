@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Sustituto de «claude» para las pruebas: muestra con qué argumentos se lanzó y espera.
+echo "FAKE CLAUDE  args: $*"
+echo "cwd: $PWD"
+exec tail -f /dev/null

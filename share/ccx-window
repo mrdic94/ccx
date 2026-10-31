@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Abre ccx en una ventana de terminal propia (lo usa el acceso del menú de aplicaciones).
+#
+# Se elige la terminal en este orden: $CCX_TERMINAL, ~/.config/ccx/terminal, o la
+# primera instalada de la lista. Las que admiten fijar la clase/app-id de la ventana (wezterm, kitty,
+# alacritty, foot) consiguen que la barra de tareas muestre el icono de ccx; el
+# resto muestra el icono de la propia terminal.
+#
+# Probado: wezterm y konsole (Fedora KDE). Resto: sin probar (ver docs/PLATAFORMAS.md).
+set -u
+CCX="$HOME/.local/bin/ccx"
+
+if [ "$(uname)" = Darwin ]; then
+  # SIN PROBAR. Preferimos WezTerm si está instalado; si no, Terminal.app.
+  if [ -d /Applications/WezTerm.app ]; then
+    exec open -na WezTerm --args \
+      --config 'window_close_confirmation="NeverPrompt"' \
+      start --always-new-process --class ccx -- "$CCX"
+  fi
+  exec osascript -e "tell application \"Terminal\" to do script \"exec '$CCX'\"" \
+                 -e 'tell application "Terminal" to activate'
+fi
+
+# Desde el menú no se heredan las variables de la shell: también vale un fichero.
+term="${CCX_TERMINAL:-$(cat "$HOME/.config/ccx/terminal" 2>/dev/null || true)}"
+if [ -z "$term" ]; then
+  for c in wezterm kitty alacritty foot konsole gnome-terminal xfce4-terminal x-terminal-emulator xterm; do
+    if command -v "$c" >/dev/null 2>&1; then term="$c"; break; fi
+  done
+fi
+
+case "$term" in
+  wezterm)
+    exec wezterm --config hide_tab_bar_if_only_one_tab=true \
+      --config 'window_close_confirmation="NeverPrompt"' \
+      start --always-new-process --class ccx -- "$CCX" ;;
+  kitty)          exec kitty --class ccx -o confirm_os_window_close=0 "$CCX" ;;
+  alacritty)      exec alacritty --class ccx -e "$CCX" ;;
+  foot)           exec foot --app-id ccx "$CCX" ;;
+  konsole)        exec konsole --hide-menubar --hide-tabbar -e "$CCX" ;;
+  gnome-terminal) exec gnome-terminal -- "$CCX" ;;
+  xfce4-terminal) exec xfce4-terminal --hide-menubar -x "$CCX" ;;
+  "")
+    msg="ccx: no se ha encontrado ninguna terminal compatible (define CCX_TERMINAL)."
+    command -v notify-send >/dev/null 2>&1 && notify-send "ccx" "$msg"
+    echo "$msg" >&2; exit 1 ;;
+  *)              exec "$term" -e "$CCX" ;;
+esac
